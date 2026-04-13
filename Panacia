@@ -1,3 +1,16 @@
+# Databricks notebook source
+# MAGIC %run /Workspace/Users/ijain3@humana.com/Panacea/getvault_key_value
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC # MTM Audit Anvita Care Alert Data Load
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 1: Package Start Logging
+
+# COMMAND ----------
+
 try:
     sp_package_start = (
         "EXEC dbo.InsertReadinessExecutionLogs "
@@ -12,6 +25,120 @@ except Exception as e:
     print(f"[ERROR] Package Start Logging failed: {str(e)}")
     raise
 
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 2: EST - Can Process Execute
 
+# COMMAND ----------
 
+process_name = "MTMAuditAnvitaCareAlertDataLoad"
 
+try:
+    cursor = conn.cursor()
+
+    # Call SP with OUTPUT parameter
+    sp_can_execute = """
+        DECLARE @IsProcessExecute BIT;
+        EXEC dbo.CheckInspireProcessSchedule
+            @ProcessName = %s,
+            @IsProcessExecute = @IsProcessExecute OUTPUT;
+        SELECT @IsProcessExecute AS IsProcessExecute;
+    """
+    cursor.execute(sp_can_execute, (process_name,))
+    row = cursor.fetchone()
+    is_process_execute = row[0] if row else 0
+
+    print(f"[INFO] CheckInspireProcessSchedule result for '{process_name}': IsProcessExecute = {is_process_execute}")
+
+except Exception as e:
+    print(f"[ERROR] EST - Can Process Execute failed: {str(e)}")
+    raise
+
+# Gate: Stop notebook if process is not scheduled to execute
+if not is_process_execute:
+    print(f"[INFO] Process '{process_name}' is not scheduled to run. Exiting notebook.")
+    dbutils.notebook.exit(f"Process '{process_name}' not scheduled. Skipping execution.")
+
+print(f"[INFO] Process '{process_name}' is cleared to execute. Proceeding...")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 3: Router - CanProcessExecute?
+# MAGIC - `IsProcessExecute == True`  → output0 → Continue pipeline
+# MAGIC - `IsProcessExecute == False` → output1 / output2 → Exit
+
+# COMMAND ----------
+
+if not is_process_execute:
+    print("[INFO] Router: IsProcessExecute is False → output1 → Running Execution Schedule Invalid logging.")
+
+    # Step 3a: Execution Schedule Invalid (output1 branch)
+    try:
+        sp_exec_schedule_invalid = (
+            "EXEC dbo.InsertReadinessExecutionLogs "
+            "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
+            "@FileName=NULL, "
+            "@ExecutionStatus='Package Execution Check Failed', "
+            "@RecordCount=0"
+        )
+        execute_sp(sp_exec_schedule_invalid)
+        print("[INFO] Execution Schedule Invalid logged successfully.")
+    except Exception as e:
+        print(f"[ERROR] Execution Schedule Invalid logging failed: {str(e)}")
+        raise
+
+    dbutils.notebook.exit("CanProcessExecute = False. Execution Schedule Invalid logged. Pipeline stopped.")
+
+print("[INFO] Router: IsProcessExecute is True. Routing to output0 — continuing pipeline.")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Step 4: Can Anvita File Process Execute
+
+# COMMAND ----------
+
+# Description: Checks whether Anvita Alert File and Canvas File Load process can be executed.
+# Validates that the latest InspireReadinessFileGenerationMasterPackage run
+# completed successfully before allowing this process to proceed.
+
+try:
+    cursor = conn.cursor()
+    cursor.execute("EXEC dbo.CanAnvitaAndCanvasFileLoadProcessExecutes")
+    row = cursor.fetchone()
+    is_file_load_process_execute = row[0] if row else 0
+
+    print(f"[INFO] CanAnvitaAndCanvasFileLoadProcessExecutes result: IsFileLoadProcessExecute = {is_file_load_process_execute}")
+
+except Exception as e:
+    print(f"[ERROR] Can Anvita File Process Execute failed: {str(e)}")
+    raise
+
+# Gate: Stop if file load process cannot execute
+if not is_file_load_process_execute:
+    print("[INFO] Anvita/Canvas file load process blocked — master package not successfully completed.")
+    print("[INFO] Router output2 branch → Join → Package End Logging.")
+
+    # Step 5a: Join (Merge) — output2 branch converges here
+    # In Databricks, the Join/Merge snap is represented by simply
+    # proceeding to the next shared step after the conditional branch.
+
+    # Step 5b: Package End Logging (after Join on output2 path)
+    try:
+        sp_package_end = (
+            "EXEC dbo.InsertReadinessExecutionLogs "
+            "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
+            "@FileName=NULL, "
+            "@ExecutionStatus='Package Successfully Completed', "
+            "@RecordCount=0"
+        )
+        execute_sp(sp_package_end)
+        print("[INFO] Package End Logging completed successfully.")
+    except Exception as e:
+        print(f"[ERROR] Package End Logging failed: {str(e)}")
+        raise
+
+    dbutils.notebook.exit("CanAnvitaFileProcessExecute = False. Package End Logging done. Pipeline stopped.")
+
+print("[INFO] Anvita/Canvas file load process cleared to execute. Proceeding...")
+
+# COMMAND ----------
