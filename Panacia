@@ -1,133 +1,17 @@
-# Databricks notebook source
-# MAGIC %md
-# MAGIC # HashiCorp Vault Client
+try:
+    sp_package_start = (
+        "EXEC dbo.InsertReadinessExecutionLogs "
+        "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
+        "@FileName=NULL, "
+        "@ExecutionStatus='Package Execution Starts', "
+        "@RecordCount=0"
+    )
+    execute_sp(sp_package_start)
+    print("[INFO] Package Start Logging completed successfully.")
+except Exception as e:
+    print(f"[ERROR] Package Start Logging failed: {str(e)}")
+    raise
 
-# COMMAND ----------
 
-import json
-import requests
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## HashiCorpVaultClient Class
 
-# COMMAND ----------
-
-class HashiCorpVaultClient:
-
-    def __init__(self, hsv_url, hsv_namespace, hsv_team_folder, hsv_team_subfolder):
-        """
-        Initialize the HashiCorp Vault client with connection details.
-
-        Args:
-            hsv_url (str):            Base URL of the HashiCorp Vault instance.
-            hsv_namespace (str):      Vault namespace (e.g., 'nsudap').
-            hsv_team_folder (str):    Team folder path in Vault.
-            hsv_team_subfolder (str): Sub-folder path within the team folder.
-        """
-        self.hsv_url          = hsv_url
-        self.hsv_namespace    = hsv_namespace
-        self.hsv_team_folder  = hsv_team_folder
-        self.hsv_team_subfolder = hsv_team_subfolder
-
-    # COMMAND ----------
-
-    def fetch_secret(self, scope, key):
-        """
-        Fetch a secret from Azure Databricks secret scope.
-
-        Args:
-            scope (str): Databricks secret scope name.
-            key (str):   Secret key name.
-
-        Returns:
-            str: Secret value retrieved from Databricks secret scope.
-        """
-        return dbutils.secrets.get(scope=scope, key=key)
-
-    # COMMAND ----------
-
-    def get_spn_jwt_token(self, client_id, client_secret, authority_url, scope):
-        """
-        Acquire a JWT token for the service principal using MSAL.
-
-        Args:
-            client_id (str):      Service principal client ID.
-            client_secret (str):  Service principal client secret.
-            authority_url (str):  Azure AD authority URL.
-            scope (list):         List of scopes for the token request.
-
-        Returns:
-            str: JWT access token for the service principal.
-        """
-        app = msal.ConfidentialClientApplication(
-            client_id,
-            authority=authority_url,
-            client_credential=client_secret
-        )
-
-        token_response = app.acquire_token_for_client(scopes=scope)
-
-        if "access_token" not in token_response:
-            raise ValueError(
-                f"Failed to acquire SPN JWT token: {token_response.get('error_description', 'Unknown error')}"
-            )
-
-        return token_response["access_token"]
-
-    # COMMAND ----------
-
-    def get_hsv_vault_token(self, spn_jwt, login_endpoint, app_name):
-        """
-        Authenticate with HashiCorp Vault using the SPN JWT token and retrieve a Vault token.
-
-        Args:
-            spn_jwt (str):        JWT token for the service principal.
-            login_endpoint (str): HashiCorp Vault JWT login endpoint URL.
-            app_name (str):       Vault role / app name used during login.
-
-        Returns:
-            str: HashiCorp Vault client token.
-        """
-        headers = {
-            "Content-type":      "application/json",
-            "X-Vault-Namespace": self.hsv_namespace
-        }
-
-        payload = json.dumps({
-            "role": app_name,
-            "jwt":  spn_jwt
-        })
-
-        response = requests.post(url=login_endpoint, data=payload, headers=headers)
-        response.raise_for_status()
-
-        return response.json()["auth"]["client_token"]
-
-    # COMMAND ----------
-
-    def get_hashicorp_key_value(self, hsv_vault_token, key):
-        """
-        Fetch a key-value secret from HashiCorp Vault KV store.
-
-        Args:
-            hsv_vault_token (str): Authenticated Vault client token.
-            key (str):             Secret key name to retrieve.
-
-        Returns:
-            str: Secret value corresponding to the given key.
-        """
-        secret_url = (
-            f"{self.hsv_url}/v1/secret/data/"
-            f"{self.hsv_team_folder}/{self.hsv_team_subfolder}"
-        )
-
-        headers = {
-            "X-Vault-Namespace": self.hsv_namespace,
-            "X-Vault-Token":     hsv_vault_token
-        }
-
-        response = requests.get(secret_url, headers=headers)
-        response.raise_for_status()
-
-        return response.json()["data"]["data"][key]
