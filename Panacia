@@ -1,0 +1,217 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Config Setup & HashiCorp Vault Integration
+
+# COMMAND ----------
+
+import os
+import json
+import msal
+import requests
+import pymssql
+import pandas as pd
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Load Environment Configuration
+
+# COMMAND ----------
+
+# Read environment variable, default to 'dev' if not set
+env = os.getenv('ENVIRONMENT', 'dev').lower()
+
+# Load config from JSON file
+with open('/Workspace/Users/ijain3@humana.com/Panacea/config.json', 'r') as f:
+    config = json.load(f)
+
+# Get config for current environment
+current_config = config.get(env, config['DEV'])
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Secret Scope & HashiCorp Vault Settings
+
+# COMMAND ----------
+
+# Secret Scope variables
+adb_secret_scope_name    = current_config["secret_hsv"]["adb_secret_scope_name"]
+adb_clientid_key_name    = "client_id"
+adb_clientsecret_key_name = "client_secret"
+adb_tenantid_key_name    = "tenant_id"
+
+# UDAP Teams HashiCorp settings
+hsv_url          = current_config["secret_hsv"]["hsv_url"]
+hsv_namespace    = "nsudap"
+hsv_team_folder  = "inspire_databricks_etl_comp.appsvc130802"
+hsv_team_subfolder = current_config["secret_hsv"]["hsv_team_subfolder"]
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Initialize Vault Client & Fetch Service Principal Secrets
+
+# COMMAND ----------
+
+vault_client = HashiCorpVaultClient(
+    hsv_url,
+    hsv_namespace,
+    hsv_team_folder,
+    hsv_team_subfolder
+)
+
+sp_client_id     = vault_client.fetch_secret(adb_secret_scope_name, adb_clientid_key_name)
+sp_client_secret = vault_client.fetch_secret(adb_secret_scope_name, adb_clientsecret_key_name)
+tenant_id        = vault_client.fetch_secret(adb_secret_scope_name, adb_tenantid_key_name)
+
+sp_authority_url   = f"https://login.microsoftonline.com/{tenant_id}"
+sp_scope           = ["https://management.azure.com//.default"]
+hsv_login_endpoint = f"{hsv_url}/v1/auth/jwt/azuread/inspirewellness/login"
+hsv_secret_url     = f"{hsv_url}/v1/secret/data/{hsv_team_folder}/{hsv_team_subfolder}"
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Authenticate with HashiCorp Vault
+
+# COMMAND ----------
+
+spn_jwt = vault_client.get_spn_jwt_token(
+    sp_client_id,
+    sp_client_secret,
+    sp_authority_url,
+    sp_scope
+)
+
+hsv_vault_token = vault_client.get_hsv_vault_token(
+    spn_jwt,
+    hsv_login_endpoint,
+    hsv_team_folder
+)
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Fetch Secrets from Vault
+
+# COMMAND ----------
+
+# Secret key names
+hsv_db_password      = "inspire_db_password"
+hsv_db_username      = "inspire_db_username"
+inspire_jdbc_url_key = "inspire_jdbc_url"
+hsv_password_mft     = "mft_password"
+hsv_username_mft     = "mft_username"
+splunk_token         = "splunk_token"
+databricks_token     = "databricks_token"
+hsv_username_emmeftp = "emme_ftp_username"
+hsv_password_emmeftp = "emme_ftp_password"
+
+# Fetch secret values
+username_mft_value      = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_username_mft)
+password_mft_value      = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_password_mft)
+username_emmeftp_value  = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_username_emmeftp)
+password_emmeftp_value  = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_password_emmeftp)
+inspire_jdbc_url        = vault_client.get_hashicorp_key_value(hsv_vault_token, inspire_jdbc_url_key)
+db_username_value       = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_db_username)
+db_password_value       = vault_client.get_hashicorp_key_value(hsv_vault_token, hsv_db_password)
+splunk_token_value      = vault_client.get_hashicorp_key_value(hsv_vault_token, splunk_token)
+databricks_token_value  = vault_client.get_hashicorp_key_value(hsv_vault_token, databricks_token)
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## JDBC URL Parser & DB Connection
+
+# COMMAND ----------
+
+def parse_sqlserver_jdbc_url(jdbc_url):
+    """
+    Parses a SQL Server JDBC URL and returns (host, port, database_name).
+    Expected format: jdbc:sqlserver://<host>:<port>;database=<dbname>;...
+    """
+    prefix = "jdbc:sqlserver://"
+
+    if not jdbc_url.startswith(prefix):
+        raise ValueError("Invalid SQL Server JDBC URL")
+
+    url_body = jdbc_url[len(prefix):]
+    host_port, *params = url_body.split(";")
+    host, port = host_port.split(":")
+
+    database_name = None
+    for param in params:
+        if param.startswith("database="):
+            database_name = param.split("=", 1)[1]
+            break
+
+    if not database_name:
+        raise ValueError("Database name not found in JDBC URL")
+
+    return host, int(port), database_name
+
+
+database_host, database_port, database_name = parse_sqlserver_jdbc_url(inspire_jdbc_url)
+
+conn = pymssql.connect(
+    server=database_host,
+    port=database_port,
+    user=db_username_value,
+    password=db_password_value,
+    database=database_name
+)
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Stored Procedure Helper Functions
+
+# COMMAND ----------
+
+def execute_sp(sp):
+    """
+    Executes a stored procedure without returning results.
+    Commits on success; raises KeyError on failure.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sp)
+        conn.commit()
+    except Exception as e:
+        print(f"No value returned for given key: {str(e)}.")
+        raise KeyError("Unable to fetch the key from HashiCorp")
+
+
+def execute_sp_output(sp_query):
+    """
+    Executes a stored procedure and returns Summary and (optionally) Array result sets
+    as a dict of records.
+    """
+    cursor = conn.cursor()
+    cursor.execute(sp_query)
+
+    row1 = cursor.fetchall()
+    cols1 = [column[0] for column in cursor.description]
+    df1 = pd.DataFrame.from_records(row1, columns=cols1)
+
+    if cursor.nextset():
+        row2 = cursor.fetchall()
+        cols2 = [column[0] for column in cursor.description]
+        df2 = pd.DataFrame.from_records(row2, columns=cols2)
+        return {
+            "Summary": df1.to_dict(orient="records"),
+            "Array":   df2.to_dict(orient="records")
+        }
+
+    return {"Summary": df1.to_dict(orient="records")}
+
+
+def execute_sp_output_return_df(sp):
+    """
+    Executes a stored procedure and returns the result as a Pandas DataFrame.
+    Returns None on failure.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sp)
+        columns = [col[0] for col in cursor.description]
+        data = cursor.fetchall()
+        df = pd.DataFrame(data, columns=columns)
+        return df
+    except Exception as e:
+        print(f"No value returned for given key: {str(e)}.")
+        return None
