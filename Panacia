@@ -1,424 +1,130 @@
-# Databricks notebook source
-# MAGIC %run /Workspace/Users/ijain3@humana.com/Panacea/getvault_key_value
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC # Second Pipeline - Anvita Care Alert Data Validation
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Router - Data Validation Check
-# MAGIC - **output0:** Record Identifier Missing or Load Count Invalid
-# MAGIC - **output1:** Any validation error count > 0
-# MAGIC - **output2:** true (all checks passed — proceed)
-
-# COMMAND ----------
-
-# NOTE: These variables should be populated by upstream steps (e.g. SP results or dataframe counts)
-# Initialised to 0 as defaults — update as upstream steps are added
-
-_IsRecordIdentifierMissing         = 0
-_IsLoadCountValid                  = 1
-
-_AlertCreatedDateGreaterThanEndDateCount = 0
-_AlertCreatedDateNotValidCount     = 0
-_AlertEndDateNotValidCount         = 0
-_DuplicateRecordCount              = 0
-_MemberGenkeyNotCorrectCount       = 0
-_MemberIdNotCorrectCount           = 0
-_AlertIDMissingCount               = 0
-_AlertTypeMissingCount             = 0
-_RuleIDMissingCount                = 0
-_AlertCreatedDateMissingCount      = 0
-_AlertTitleMissingCount            = 0
-_AlertTextMissingCount             = 0
-_SecurityLevelMissingCount         = 0
-_MemberIDMissingCount              = 0
-_MemberGenKeyMissingCount          = 0
-_AlertNDCNotValidCount             = 0
-_ErrorRecordsInNDCTable            = 0
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Route Evaluation (First Match)
-
-# COMMAND ----------
-
-# output0: Record identifier missing or load count invalid
-if _IsRecordIdentifierMissing == 1 or _IsLoadCountValid == 0:
-    print("[INFO] Router → output0: Record Identifier Missing or Load Count Invalid.")
-
-    # COMMAND ----------
-    # MAGIC %md
-    # MAGIC ### output0 → Email Sender: INVALID FILE
-
-    # COMMAND ----------
-
-    import smtplib
-    import socket
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from datetime import datetime
-    import pytz
-
-    # ---- Email fields ----
-    to_addresses  = _EmailInfo.replace(';', ',')
-    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
-    subject       = f"RxInspire{_EnvironmentValue} : INVALID FILE - MTM Audit Anvita Care Alert File Load Package Executed."
-
-    # ---- Execution metadata ----
-    est           = pytz.timezone("US/Eastern")
-    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
-    exec_machine  = socket.gethostname().upper()
-    exec_user     = spark.conf.get("spark.databricks.clusterUsageTags.userId", "Unknown")
-    archive_path  = ArchivePathForMail.replace("smb:", "")
-
-    # ---- HTML email body ----
-    email_body = f"""
-<html>
-<head>
-    <title>Email Snap HTML Table</title>
-    <style type="text/css">
-        table.hovertable {{
-            font-family: verdana, arial, sans-serif;
-            font-size: 11px;
-            color: #333333;
-            border-width: 1px;
-            border-color: #999999;
-            border-collapse: collapse;
-        }}
-        table.hovertable th {{
-            background-color: #c3dde0;
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-        }}
-        table.hovertable tr {{
-            background-color: #d4e3e5;
-        }}
-        table.hovertable td {{
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-            margin-top: 10px;
-        }}
-    </style>
-</head>
-<body>
-    <font size="3"><b>MTM Audit Anvita Care Alert File Load Package executed but file is not processed
-    as there is a mis-match in total records and trailer count or Header Row Date.
-    File is archived.<br/>Kindly check.</b></font><br/><br/>
-
-    <font size="3"><b>Snaplogic Pipeline executed :: </b>{_ProcessName}</font><br/><br/>
-
-    <p><b><font size="3">Executed At :: </font></b>{executed_at}</p>
-
-    <p><b><font size="3">Execution Machine :: </font></b>{exec_machine}</p>
-
-    <p><b><font size="3">Executed By :: </font></b>{exec_user}</p>
-
-    <p><font size="3">Inspire AnvitaCareAlert Execution Archive File :: {archive_path}</font></p>
-
-    <br/>
-    <font size="3">This is a system generated email. Please do not Reply.</font>
-
-    <p><b><font size="3">Inspire IT System Notification</font></b></p>
-</body>
-</html>
-"""
-
-    # ---- Send email via SMTP ----
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["From"]    = from_address
-        msg["To"]      = to_addresses
-        msg["Subject"] = subject
-        msg.attach(MIMEText(email_body, "html"))
-
-        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
-        smtp_server.sendmail(from_address, to_addresses.split(","), msg.as_string())
-        smtp_server.quit()
-        print(f"[INFO] output0 Email sent successfully to: {to_addresses}")
-    except Exception as e:
-        print(f"[ERROR] Failed to send output0 email: {str(e)}")
-        raise
-
-    dbutils.notebook.exit("Router output0: Invalid File email sent. Pipeline stopped.")
-
-# output1: Any validation error count > 0
-elif (
-    _AlertCreatedDateGreaterThanEndDateCount > 0 or
-    _AlertCreatedDateNotValidCount          > 0 or
-    _AlertEndDateNotValidCount              > 0 or
-    _DuplicateRecordCount                   > 0 or
-    _MemberGenkeyNotCorrectCount            > 0 or
-    _MemberIdNotCorrectCount                > 0 or
-    _AlertIDMissingCount                    > 0 or
-    _AlertTypeMissingCount                  > 0 or
-    _RuleIDMissingCount                     > 0 or
-    _AlertCreatedDateMissingCount           > 0 or
-    _AlertTitleMissingCount                 > 0 or
-    _AlertTextMissingCount                  > 0 or
-    _SecurityLevelMissingCount              > 0 or
-    _MemberIDMissingCount                   > 0 or
-    _MemberGenKeyMissingCount               > 0 or
-    _AlertNDCNotValidCount                  > 0 or
-    _ErrorRecordsInNDCTable                 > 0
-):
-    print("[INFO] Router → output1: One or more validation error counts > 0.")
-
-    # COMMAND ----------
-    # MAGIC %md
-    # MAGIC ### output1 → GetErrorCountsForMail
-
-    # COMMAND ----------
-
-    # Fetch error reason breakdown for the email body
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "EXEC dbo.GetAnvitaValidationErrorCountsForMail @FileId = %s",
-            (_FileId,)
-        )
-        rows    = cursor.fetchall()
-        columns = [col[0] for col in cursor.description]
-        df_error_counts = pd.DataFrame(rows, columns=columns)
-        print(f"[INFO] GetErrorCountsForMail returned {len(df_error_counts)} error reason(s).")
-        print(df_error_counts.to_string(index=False))
-    except Exception as e:
-        print(f"[ERROR] GetErrorCountsForMail failed: {str(e)}")
-        raise
-
-    # Build HTML table rows from error counts result set
-    error_table_rows = ""
-    for _, row in df_error_counts.iterrows():
-        error_table_rows += f"""
-        <tr>
-            <td>{row['ErrorReason']}</td>
-            <td>{row['ErrorCounts']}</td>
-        </tr>"""
-
-    # COMMAND ----------
-    # MAGIC %md
-    # MAGIC ### output1 → Vendor Email Sender: Validation Error
-
-    # COMMAND ----------
-
-    import smtplib
-    import socket
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from datetime import datetime
-    import pytz
-
-    # ---- Email fields ----
-    to_addresses  = _EmailInfo.replace(';', ',')
-    cc_addresses  = _VendorEmailInfo.replace(';', ',')
-    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
-    subject       = f"RxInspire{_EnvironmentValue} - Validation Error In MTM Audit Anvita Care Alert File Load Execution Process."
-
-    # ---- Execution metadata ----
-    est           = pytz.timezone("US/Eastern")
-    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
-    error_path    = ErrorPathForMail.replace("smb:", "")
-
-    # ---- Build error counts HTML table from df_error_counts ----
-    error_detail_rows = ""
-    for _, row in df_error_counts.iterrows():
-        error_detail_rows += f"""
-        <tr>
-            <td>{row['ErrorReason']}</td>
-            <td>{row['ErrorCounts']}</td>
-        </tr>"""
-
-    # ---- $original equivalent: flatten df_error_counts to readable string ----
-    original_text = df_error_counts.to_string(index=False).replace("\n", "")
-
-    # ---- HTML email body ----
-    email_body = f"""
-<html>
-<head>
-    <title>Email Snap HTML Table</title>
-    <style type="text/css">
-        table.hovertable {{
-            font-family: verdana, arial, sans-serif;
-            font-size: 11px;
-            color: #333333;
-            border-width: 1px;
-            border-color: #999999;
-            border-collapse: collapse;
-        }}
-        table.hovertable th {{
-            background-color: #c3dde0;
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-        }}
-        table.hovertable tr {{
-            background-color: #d4e3e5;
-        }}
-        table.hovertable td {{
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-            margin-top: 10px;
-        }}
-    </style>
-</head>
-<body>
-    <font size="3"><b>MTM Audit Anvita Care Alert File Load execution process is partially
-    successful with some validation errors. Please see below for details.<br/><br/>
-
-    Error Records Description<br><br>
-    {original_text}
-
-    <br><br>Error File Path :: {error_path}
-    </b></font>
-
-    <p><br>
-    <font size="3">This is a system generated email. Please do not Reply.</font>
-    </p>
-
-    <p><b><font size="3">Inspire IT System Notification</font></b></p>
-</body>
-</html>
-"""
-
-    # ---- Send email via SMTP ----
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["From"]    = from_address
-        msg["To"]      = to_addresses
-        msg["Cc"]      = cc_addresses
-        msg["Subject"] = subject
-        msg.attach(MIMEText(email_body, "html"))
-
-        all_recipients = to_addresses.split(",") + cc_addresses.split(",")
-
-        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
-        smtp_server.sendmail(from_address, all_recipients, msg.as_string())
-        smtp_server.quit()
-        print(f"[INFO] output1 Validation Error email sent to: {to_addresses}, CC: {cc_addresses}")
-    except Exception as e:
-        print(f"[ERROR] Failed to send output1 validation error email: {str(e)}")
-        raise
-
-    dbutils.notebook.exit("Router output1: Validation error email sent. Pipeline stopped.")
-
-# output2: true — all checks passed
-else:
-    print("[INFO] Router → output2: All validation checks passed. Sending success email.")
-
-    # COMMAND ----------
-    # MAGIC %md
-    # MAGIC ### output2 → Email Sender: SUCCESSFUL
-
-    # COMMAND ----------
-
-    import smtplib
-    import socket
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from datetime import datetime
-    import pytz
-
-    # ---- Email fields ----
-    to_addresses  = _EmailInfo.replace(';', ',')
-    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
-    subject       = f"RxInspire{_EnvironmentValue} : SUCCESSFUL - MTM Audit Anvita Care Alert File Load Package Executed."
-
-    # ---- Execution metadata ----
-    est           = pytz.timezone("US/Eastern")
-    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
-    exec_machine  = socket.gethostname().upper()
-    exec_user     = spark.conf.get("spark.databricks.clusterUsageTags.userId", "Unknown")
-    archive_path  = ArchivePathForMail.replace("smb:", "")
-
-    # ---- HTML email body ----
-    email_body = f"""
-<html>
-<head>
-    <title>Email Snap HTML Table</title>
-    <style type="text/css">
-        table.hovertable {{
-            font-family: verdana, arial, sans-serif;
-            font-size: 11px;
-            color: #333333;
-            border-width: 1px;
-            border-color: #999999;
-            border-collapse: collapse;
-        }}
-        table.hovertable th {{
-            background-color: #c3dde0;
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-        }}
-        table.hovertable tr {{
-            background-color: #d4e3e5;
-        }}
-        table.hovertable td {{
-            border-width: 1px;
-            padding: 8px;
-            border-style: solid;
-            border-color: #a9c6c9;
-            margin-top: 10px;
-        }}
-    </style>
-</head>
-<body>
-    <font size="3"><b>MTM Audit Anvita Care Alert File Load Package executed successfully
-    and file {filename} is archived.</b></font><br/><br/>
-
-    <table class="hovertable">
-        <tr>
-            <th>Description</th>
-            <th>Record Count</th>
-        </tr>
-        <tr>
-            <td>Total Record Count In File</td>
-            <td>{ProcessedDataRowCount}</td>
-        </tr>
-    </table>
-    <br/><br/>
-
-    <font size="3"><b>Snaplogic Pipeline executed :: </b>{_ProcessName}</font><br/><br/>
-
-    <p><b><font size="3">Executed At :: </font></b>{executed_at}</p>
-
-    <p><b><font size="3">Execution Machine :: </font></b>{exec_machine}</p>
-
-    <p><b><font size="3">Executed By :: </font></b>{exec_user}</p>
-
-    <p><font size="3">Inspire AnvitaCareAlert Execution Archive File :: {archive_path}</font></p>
-
-    <br/>
-    <font size="3">This is a system generated email. Please do not Reply.</font>
-
-    <p><b><font size="3">Inspire IT System Notification</font></b></p>
-</body>
-</html>
-"""
-
-    # ---- Send email via SMTP ----
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["From"]    = from_address
-        msg["To"]      = to_addresses
-        msg["Subject"] = subject
-        msg.attach(MIMEText(email_body, "html"))
-
-        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
-        smtp_server.sendmail(from_address, to_addresses.split(","), msg.as_string())
-        smtp_server.quit()
-        print(f"[INFO] output2 Success email sent successfully to: {to_addresses}")
-    except Exception as e:
-        print(f"[ERROR] Failed to send output2 success email: {str(e)}")
-        raise
-
-# COMMAND ----------
+# Databricks Notebook
+# Converted from SnapLogic Pipeline
+
+# ============================================================
+# CELL 1: Configuration & Imports
+# ============================================================
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType
+import csv
+import io
+
+# Configuration - set these as notebook parameters or widgets
+dbutils.widgets.text("SourceFTPDirectory", "", "Source FTP Directory")
+dbutils.widgets.text("filename", "", "File Name")
+
+_SourceFTPDirectory = dbutils.widgets.get("SourceFTPDirectory")
+_filename           = dbutils.widgets.get("filename")
+
+# SMB / JDBC connection config — update with your actual credentials
+JDBC_URL    = "jdbc:sqlserver://<host>:<port>;databaseName=<dbname>"
+DB_USER     = dbutils.secrets.get(scope="<scope>", key="db_user")
+DB_PASSWORD = dbutils.secrets.get(scope="<scope>", key="db_password")
+
+jdbc_properties = {
+    "user":     DB_USER,
+    "password": DB_PASSWORD,
+    "driver":   "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+}
+
+# ============================================================
+# CELL 2: Snap 1 — TRUNCATE staging table
+# SQL: TRUNCATE TABLE dbo.FileRecordStaging
+# ============================================================
+import pyodbc   # or use JDBC via spark if pyodbc is unavailable
+
+connection_string = (
+    f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+    f"SERVER=<host>,<port>;"
+    f"DATABASE=<dbname>;"
+    f"UID={DB_USER};"
+    f"PWD={DB_PASSWORD}"
+)
+
+conn   = pyodbc.connect(connection_string, autocommit=True)
+cursor = conn.cursor()
+cursor.execute("TRUNCATE TABLE dbo.FileRecordStaging")
+print("✅ TRUNCATE TABLE dbo.FileRecordStaging — done")
+conn.close()
+
+# ============================================================
+# CELL 3: Snap 2 — File Reader
+# SnapLogic expression: 'smb:' + _SourceFTPDirectory + _filename
+# Mapped to a mounted DBFS/SMB path in Databricks
+# ============================================================
+
+# If SMB share is mounted at /mnt/<mount_name>, adjust accordingly
+smb_mount_base = "/mnt/smb_share"   # change to your actual DBFS mount point
+file_path      = f"{smb_mount_base}/{_SourceFTPDirectory}/{_filename}"
+
+print(f"📂 Reading file: {file_path}")
+raw_text = dbutils.fs.head(file_path, 100_000_000)  # reads up to ~100 MB as string
+
+# ============================================================
+# CELL 4: Snap 3 — CSV Parser
+# Quote char : "
+# Delimiter  : {
+# Escape char: <
+# Skip lines : 0
+# Column name: FileRecord (single header column)
+# Charset    : UTF-8
+# Flags      : ignore empty data, preserve surrounding spaces
+#              header size error policy = both
+# ============================================================
+
+reader = csv.reader(
+    io.StringIO(raw_text),
+    delimiter      = "{",
+    quotechar      = '"',
+    escapechar     = "<",
+    skipinitialspace = False,   # preserve surrounding spaces
+    strict         = False      # tolerate header size mismatches (both)
+)
+
+rows    = list(reader)
+records = []
+
+if rows:
+    header = rows[0]   # first row is the header  →  ["FileRecord"]
+    print(f"📋 Header row: {header}")
+
+    for row in rows[1:]:
+        # Ignore empty data: skip rows where every field is blank
+        if not any(field.strip() for field in row):
+            continue
+
+        # Pad short rows / trim long rows to match header length (header size error policy = both)
+        while len(row) < len(header):
+            row.append("")
+        row = row[:len(header)]
+
+        records.append(row)
+
+print(f"✅ Parsed {len(records)} records (excluding header)")
+
+# ============================================================
+# CELL 5: Load parsed data into a Spark DataFrame
+# ============================================================
+
+schema = StructType([StructField("FileRecord", StringType(), True)])
+
+# Build list of Row dicts
+from pyspark.sql import Row
+spark_rows = [Row(FileRecord=r[0]) for r in records]
+
+df = spark.createDataFrame(spark_rows, schema=schema)
+df.show(10, truncate=False)
+print(f"🔢 Total rows in DataFrame: {df.count()}")
+
+# ============================================================
+# CELL 6: Write to dbo.FileRecordStaging
+# ============================================================
+
+df.write.jdbc(
+    url        = JDBC_URL,
+    table      = "dbo.FileRecordStaging",
+    mode       = "append",       # table already truncated in Cell 2
+    properties = jdbc_properties
+)
+
+print("✅ Data written to dbo.FileRecordStaging")
