@@ -3,142 +3,422 @@
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC # MTM Audit Anvita Care Alert Data Load
+# MAGIC # Second Pipeline - Anvita Care Alert Data Validation
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 1: Package Start Logging
+# MAGIC ## Router - Data Validation Check
+# MAGIC - **output0:** Record Identifier Missing or Load Count Invalid
+# MAGIC - **output1:** Any validation error count > 0
+# MAGIC - **output2:** true (all checks passed — proceed)
 
 # COMMAND ----------
 
-try:
-    sp_package_start = (
-        "EXEC dbo.InsertReadinessExecutionLogs "
-        "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
-        "@FileName=NULL, "
-        "@ExecutionStatus='Package Execution Starts', "
-        "@RecordCount=0"
-    )
-    execute_sp(sp_package_start)
-    print("[INFO] Package Start Logging completed successfully.")
-except Exception as e:
-    print(f"[ERROR] Package Start Logging failed: {str(e)}")
-    raise
+# NOTE: These variables should be populated by upstream steps (e.g. SP results or dataframe counts)
+# Initialised to 0 as defaults — update as upstream steps are added
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 2: EST - Can Process Execute
+_IsRecordIdentifierMissing         = 0
+_IsLoadCountValid                  = 1
 
-# COMMAND ----------
-
-process_name = "MTMAuditAnvitaCareAlertDataLoad"
-
-try:
-    cursor = conn.cursor()
-
-    # Call SP with OUTPUT parameter
-    sp_can_execute = """
-        DECLARE @IsProcessExecute BIT;
-        EXEC dbo.CheckInspireProcessSchedule
-            @ProcessName = %s,
-            @IsProcessExecute = @IsProcessExecute OUTPUT;
-        SELECT @IsProcessExecute AS IsProcessExecute;
-    """
-    cursor.execute(sp_can_execute, (process_name,))
-    row = cursor.fetchone()
-    is_process_execute = row[0] if row else 0
-
-    print(f"[INFO] CheckInspireProcessSchedule result for '{process_name}': IsProcessExecute = {is_process_execute}")
-
-except Exception as e:
-    print(f"[ERROR] EST - Can Process Execute failed: {str(e)}")
-    raise
-
-# Gate: Stop notebook if process is not scheduled to execute
-if not is_process_execute:
-    print(f"[INFO] Process '{process_name}' is not scheduled to run. Exiting notebook.")
-    dbutils.notebook.exit(f"Process '{process_name}' not scheduled. Skipping execution.")
-
-print(f"[INFO] Process '{process_name}' is cleared to execute. Proceeding...")
+_AlertCreatedDateGreaterThanEndDateCount = 0
+_AlertCreatedDateNotValidCount     = 0
+_AlertEndDateNotValidCount         = 0
+_DuplicateRecordCount              = 0
+_MemberGenkeyNotCorrectCount       = 0
+_MemberIdNotCorrectCount           = 0
+_AlertIDMissingCount               = 0
+_AlertTypeMissingCount             = 0
+_RuleIDMissingCount                = 0
+_AlertCreatedDateMissingCount      = 0
+_AlertTitleMissingCount            = 0
+_AlertTextMissingCount             = 0
+_SecurityLevelMissingCount         = 0
+_MemberIDMissingCount              = 0
+_MemberGenKeyMissingCount          = 0
+_AlertNDCNotValidCount             = 0
+_ErrorRecordsInNDCTable            = 0
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Step 3: Router - CanProcessExecute?
-# MAGIC - `IsProcessExecute == True`  → output0 → Continue pipeline
-# MAGIC - `IsProcessExecute == False` → output1 / output2 → Exit
+# MAGIC ### Route Evaluation (First Match)
 
 # COMMAND ----------
 
-if not is_process_execute:
-    print("[INFO] Router: IsProcessExecute is False → output1 → Running Execution Schedule Invalid logging.")
+# output0: Record identifier missing or load count invalid
+if _IsRecordIdentifierMissing == 1 or _IsLoadCountValid == 0:
+    print("[INFO] Router → output0: Record Identifier Missing or Load Count Invalid.")
 
-    # Step 3a: Execution Schedule Invalid (output1 branch)
+    # COMMAND ----------
+    # MAGIC %md
+    # MAGIC ### output0 → Email Sender: INVALID FILE
+
+    # COMMAND ----------
+
+    import smtplib
+    import socket
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from datetime import datetime
+    import pytz
+
+    # ---- Email fields ----
+    to_addresses  = _EmailInfo.replace(';', ',')
+    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
+    subject       = f"RxInspire{_EnvironmentValue} : INVALID FILE - MTM Audit Anvita Care Alert File Load Package Executed."
+
+    # ---- Execution metadata ----
+    est           = pytz.timezone("US/Eastern")
+    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
+    exec_machine  = socket.gethostname().upper()
+    exec_user     = spark.conf.get("spark.databricks.clusterUsageTags.userId", "Unknown")
+    archive_path  = ArchivePathForMail.replace("smb:", "")
+
+    # ---- HTML email body ----
+    email_body = f"""
+<html>
+<head>
+    <title>Email Snap HTML Table</title>
+    <style type="text/css">
+        table.hovertable {{
+            font-family: verdana, arial, sans-serif;
+            font-size: 11px;
+            color: #333333;
+            border-width: 1px;
+            border-color: #999999;
+            border-collapse: collapse;
+        }}
+        table.hovertable th {{
+            background-color: #c3dde0;
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+        }}
+        table.hovertable tr {{
+            background-color: #d4e3e5;
+        }}
+        table.hovertable td {{
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+            margin-top: 10px;
+        }}
+    </style>
+</head>
+<body>
+    <font size="3"><b>MTM Audit Anvita Care Alert File Load Package executed but file is not processed
+    as there is a mis-match in total records and trailer count or Header Row Date.
+    File is archived.<br/>Kindly check.</b></font><br/><br/>
+
+    <font size="3"><b>Snaplogic Pipeline executed :: </b>{_ProcessName}</font><br/><br/>
+
+    <p><b><font size="3">Executed At :: </font></b>{executed_at}</p>
+
+    <p><b><font size="3">Execution Machine :: </font></b>{exec_machine}</p>
+
+    <p><b><font size="3">Executed By :: </font></b>{exec_user}</p>
+
+    <p><font size="3">Inspire AnvitaCareAlert Execution Archive File :: {archive_path}</font></p>
+
+    <br/>
+    <font size="3">This is a system generated email. Please do not Reply.</font>
+
+    <p><b><font size="3">Inspire IT System Notification</font></b></p>
+</body>
+</html>
+"""
+
+    # ---- Send email via SMTP ----
     try:
-        sp_exec_schedule_invalid = (
-            "EXEC dbo.InsertReadinessExecutionLogs "
-            "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
-            "@FileName=NULL, "
-            "@ExecutionStatus='Package Execution Check Failed', "
-            "@RecordCount=0"
-        )
-        execute_sp(sp_exec_schedule_invalid)
-        print("[INFO] Execution Schedule Invalid logged successfully.")
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = from_address
+        msg["To"]      = to_addresses
+        msg["Subject"] = subject
+        msg.attach(MIMEText(email_body, "html"))
+
+        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
+        smtp_server.sendmail(from_address, to_addresses.split(","), msg.as_string())
+        smtp_server.quit()
+        print(f"[INFO] output0 Email sent successfully to: {to_addresses}")
     except Exception as e:
-        print(f"[ERROR] Execution Schedule Invalid logging failed: {str(e)}")
+        print(f"[ERROR] Failed to send output0 email: {str(e)}")
         raise
 
-    dbutils.notebook.exit("CanProcessExecute = False. Execution Schedule Invalid logged. Pipeline stopped.")
+    dbutils.notebook.exit("Router output0: Invalid File email sent. Pipeline stopped.")
 
-print("[INFO] Router: IsProcessExecute is True. Routing to output0 — continuing pipeline.")
+# output1: Any validation error count > 0
+elif (
+    _AlertCreatedDateGreaterThanEndDateCount > 0 or
+    _AlertCreatedDateNotValidCount          > 0 or
+    _AlertEndDateNotValidCount              > 0 or
+    _DuplicateRecordCount                   > 0 or
+    _MemberGenkeyNotCorrectCount            > 0 or
+    _MemberIdNotCorrectCount                > 0 or
+    _AlertIDMissingCount                    > 0 or
+    _AlertTypeMissingCount                  > 0 or
+    _RuleIDMissingCount                     > 0 or
+    _AlertCreatedDateMissingCount           > 0 or
+    _AlertTitleMissingCount                 > 0 or
+    _AlertTextMissingCount                  > 0 or
+    _SecurityLevelMissingCount              > 0 or
+    _MemberIDMissingCount                   > 0 or
+    _MemberGenKeyMissingCount               > 0 or
+    _AlertNDCNotValidCount                  > 0 or
+    _ErrorRecordsInNDCTable                 > 0
+):
+    print("[INFO] Router → output1: One or more validation error counts > 0.")
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Step 4: Can Anvita File Process Execute
+    # COMMAND ----------
+    # MAGIC %md
+    # MAGIC ### output1 → GetErrorCountsForMail
 
-# COMMAND ----------
+    # COMMAND ----------
 
-# Description: Checks whether Anvita Alert File and Canvas File Load process can be executed.
-# Validates that the latest InspireReadinessFileGenerationMasterPackage run
-# completed successfully before allowing this process to proceed.
-
-try:
-    cursor = conn.cursor()
-    cursor.execute("EXEC dbo.CanAnvitaAndCanvasFileLoadProcessExecutes")
-    row = cursor.fetchone()
-    is_file_load_process_execute = row[0] if row else 0
-
-    print(f"[INFO] CanAnvitaAndCanvasFileLoadProcessExecutes result: IsFileLoadProcessExecute = {is_file_load_process_execute}")
-
-except Exception as e:
-    print(f"[ERROR] Can Anvita File Process Execute failed: {str(e)}")
-    raise
-
-# Gate: Stop if file load process cannot execute
-if not is_file_load_process_execute:
-    print("[INFO] Anvita/Canvas file load process blocked — master package not successfully completed.")
-    print("[INFO] Router output2 branch → Join → Package End Logging.")
-
-    # Step 5a: Join (Merge) — output2 branch converges here
-    # In Databricks, the Join/Merge snap is represented by simply
-    # proceeding to the next shared step after the conditional branch.
-
-    # Step 5b: Package End Logging (after Join on output2 path)
+    # Fetch error reason breakdown for the email body
     try:
-        sp_package_end = (
-            "EXEC dbo.InsertReadinessExecutionLogs "
-            "@FileType='MTMAuditAnvitaCareAlertDataLoad', "
-            "@FileName=NULL, "
-            "@ExecutionStatus='Package Successfully Completed', "
-            "@RecordCount=0"
+        cursor = conn.cursor()
+        cursor.execute(
+            "EXEC dbo.GetAnvitaValidationErrorCountsForMail @FileId = %s",
+            (_FileId,)
         )
-        execute_sp(sp_package_end)
-        print("[INFO] Package End Logging completed successfully.")
+        rows    = cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        df_error_counts = pd.DataFrame(rows, columns=columns)
+        print(f"[INFO] GetErrorCountsForMail returned {len(df_error_counts)} error reason(s).")
+        print(df_error_counts.to_string(index=False))
     except Exception as e:
-        print(f"[ERROR] Package End Logging failed: {str(e)}")
+        print(f"[ERROR] GetErrorCountsForMail failed: {str(e)}")
         raise
 
-    dbutils.notebook.exit("CanAnvitaFileProcessExecute = False. Package End Logging done. Pipeline stopped.")
+    # Build HTML table rows from error counts result set
+    error_table_rows = ""
+    for _, row in df_error_counts.iterrows():
+        error_table_rows += f"""
+        <tr>
+            <td>{row['ErrorReason']}</td>
+            <td>{row['ErrorCounts']}</td>
+        </tr>"""
 
-print("[INFO] Anvita/Canvas file load process cleared to execute. Proceeding...")
+    # COMMAND ----------
+    # MAGIC %md
+    # MAGIC ### output1 → Vendor Email Sender: Validation Error
+
+    # COMMAND ----------
+
+    import smtplib
+    import socket
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from datetime import datetime
+    import pytz
+
+    # ---- Email fields ----
+    to_addresses  = _EmailInfo.replace(';', ',')
+    cc_addresses  = _VendorEmailInfo.replace(';', ',')
+    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
+    subject       = f"RxInspire{_EnvironmentValue} - Validation Error In MTM Audit Anvita Care Alert File Load Execution Process."
+
+    # ---- Execution metadata ----
+    est           = pytz.timezone("US/Eastern")
+    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
+    error_path    = ErrorPathForMail.replace("smb:", "")
+
+    # ---- Build error counts HTML table from df_error_counts ----
+    error_detail_rows = ""
+    for _, row in df_error_counts.iterrows():
+        error_detail_rows += f"""
+        <tr>
+            <td>{row['ErrorReason']}</td>
+            <td>{row['ErrorCounts']}</td>
+        </tr>"""
+
+    # ---- $original equivalent: flatten df_error_counts to readable string ----
+    original_text = df_error_counts.to_string(index=False).replace("\n", "")
+
+    # ---- HTML email body ----
+    email_body = f"""
+<html>
+<head>
+    <title>Email Snap HTML Table</title>
+    <style type="text/css">
+        table.hovertable {{
+            font-family: verdana, arial, sans-serif;
+            font-size: 11px;
+            color: #333333;
+            border-width: 1px;
+            border-color: #999999;
+            border-collapse: collapse;
+        }}
+        table.hovertable th {{
+            background-color: #c3dde0;
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+        }}
+        table.hovertable tr {{
+            background-color: #d4e3e5;
+        }}
+        table.hovertable td {{
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+            margin-top: 10px;
+        }}
+    </style>
+</head>
+<body>
+    <font size="3"><b>MTM Audit Anvita Care Alert File Load execution process is partially
+    successful with some validation errors. Please see below for details.<br/><br/>
+
+    Error Records Description<br><br>
+    {original_text}
+
+    <br><br>Error File Path :: {error_path}
+    </b></font>
+
+    <p><br>
+    <font size="3">This is a system generated email. Please do not Reply.</font>
+    </p>
+
+    <p><b><font size="3">Inspire IT System Notification</font></b></p>
+</body>
+</html>
+"""
+
+    # ---- Send email via SMTP ----
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = from_address
+        msg["To"]      = to_addresses
+        msg["Cc"]      = cc_addresses
+        msg["Subject"] = subject
+        msg.attach(MIMEText(email_body, "html"))
+
+        all_recipients = to_addresses.split(",") + cc_addresses.split(",")
+
+        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
+        smtp_server.sendmail(from_address, all_recipients, msg.as_string())
+        smtp_server.quit()
+        print(f"[INFO] output1 Validation Error email sent to: {to_addresses}, CC: {cc_addresses}")
+    except Exception as e:
+        print(f"[ERROR] Failed to send output1 validation error email: {str(e)}")
+        raise
+
+    dbutils.notebook.exit("Router output1: Validation error email sent. Pipeline stopped.")
+
+# output2: true — all checks passed
+else:
+    print("[INFO] Router → output2: All validation checks passed. Sending success email.")
+
+    # COMMAND ----------
+    # MAGIC %md
+    # MAGIC ### output2 → Email Sender: SUCCESSFUL
+
+    # COMMAND ----------
+
+    import smtplib
+    import socket
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from datetime import datetime
+    import pytz
+
+    # ---- Email fields ----
+    to_addresses  = _EmailInfo.replace(';', ',')
+    from_address  = f"Inspire{_EnvironmentValue}@humana.com"
+    subject       = f"RxInspire{_EnvironmentValue} : SUCCESSFUL - MTM Audit Anvita Care Alert File Load Package Executed."
+
+    # ---- Execution metadata ----
+    est           = pytz.timezone("US/Eastern")
+    executed_at   = datetime.now(est).strftime("%m/%d/%Y %I:%M %p")
+    exec_machine  = socket.gethostname().upper()
+    exec_user     = spark.conf.get("spark.databricks.clusterUsageTags.userId", "Unknown")
+    archive_path  = ArchivePathForMail.replace("smb:", "")
+
+    # ---- HTML email body ----
+    email_body = f"""
+<html>
+<head>
+    <title>Email Snap HTML Table</title>
+    <style type="text/css">
+        table.hovertable {{
+            font-family: verdana, arial, sans-serif;
+            font-size: 11px;
+            color: #333333;
+            border-width: 1px;
+            border-color: #999999;
+            border-collapse: collapse;
+        }}
+        table.hovertable th {{
+            background-color: #c3dde0;
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+        }}
+        table.hovertable tr {{
+            background-color: #d4e3e5;
+        }}
+        table.hovertable td {{
+            border-width: 1px;
+            padding: 8px;
+            border-style: solid;
+            border-color: #a9c6c9;
+            margin-top: 10px;
+        }}
+    </style>
+</head>
+<body>
+    <font size="3"><b>MTM Audit Anvita Care Alert File Load Package executed successfully
+    and file {filename} is archived.</b></font><br/><br/>
+
+    <table class="hovertable">
+        <tr>
+            <th>Description</th>
+            <th>Record Count</th>
+        </tr>
+        <tr>
+            <td>Total Record Count In File</td>
+            <td>{ProcessedDataRowCount}</td>
+        </tr>
+    </table>
+    <br/><br/>
+
+    <font size="3"><b>Snaplogic Pipeline executed :: </b>{_ProcessName}</font><br/><br/>
+
+    <p><b><font size="3">Executed At :: </font></b>{executed_at}</p>
+
+    <p><b><font size="3">Execution Machine :: </font></b>{exec_machine}</p>
+
+    <p><b><font size="3">Executed By :: </font></b>{exec_user}</p>
+
+    <p><font size="3">Inspire AnvitaCareAlert Execution Archive File :: {archive_path}</font></p>
+
+    <br/>
+    <font size="3">This is a system generated email. Please do not Reply.</font>
+
+    <p><b><font size="3">Inspire IT System Notification</font></b></p>
+</body>
+</html>
+"""
+
+    # ---- Send email via SMTP ----
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = from_address
+        msg["To"]      = to_addresses
+        msg["Subject"] = subject
+        msg.attach(MIMEText(email_body, "html"))
+
+        smtp_server = smtplib.SMTP("localhost", 25)   # update SMTP host/port as needed
+        smtp_server.sendmail(from_address, to_addresses.split(","), msg.as_string())
+        smtp_server.quit()
+        print(f"[INFO] output2 Success email sent successfully to: {to_addresses}")
+    except Exception as e:
+        print(f"[ERROR] Failed to send output2 success email: {str(e)}")
+        raise
 
 # COMMAND ----------
